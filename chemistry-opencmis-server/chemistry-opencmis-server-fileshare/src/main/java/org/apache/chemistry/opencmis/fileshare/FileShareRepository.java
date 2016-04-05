@@ -145,8 +145,6 @@ public class FileShareRepository {
     private static final Logger LOG = LoggerFactory.getLogger(FileShareRepository.class);
 
     private static final String ROOT_ID = "@root@";
-    private static final String SHADOW_EXT = ".cmis.xml";
-    private static final String SHADOW_FOLDER = "cmis.xml";
 
     private static final String USER_UNKNOWN = "<unknown>";
 
@@ -723,17 +721,6 @@ public class FileShareRepository {
         } else {
             // set new id
             objectId.setValue(getId(newFile));
-
-            // if it is a file, move properties file too
-            if (newFile.isFile()) {
-                File propFile = getPropertiesFile(file);
-                if (propFile.exists()) {
-                    File newPropFile = new File(parent, propFile.getName());
-                    if (!propFile.renameTo(newPropFile)) {
-                        LOG.error("Could not rename properties file: {}", propFile.getName());
-                    }
-                }
-            }
         }
 
         return compileObjectData(context, newFile, null, false, false, userReadOnly, objectInfos);
@@ -802,8 +789,7 @@ public class FileShareRepository {
             throw new CmisConstraintException("Folder is not empty!");
         }
 
-        // delete properties and actual file
-        getPropertiesFile(file).delete();
+        // delete file
         if (!file.delete()) {
             throw new CmisStorageException("Deletion failed!");
         }
@@ -922,7 +908,6 @@ public class FileShareRepository {
         File newFile = file;
         if (isRename) {
             File parent = file.getParentFile();
-            File propFile = getPropertiesFile(file);
             newFile = new File(parent, newName);
             if (!file.renameTo(newFile)) {
                 // if something went wrong, throw an exception
@@ -930,16 +915,6 @@ public class FileShareRepository {
             } else {
                 // set new id
                 objectId.setValue(getId(newFile));
-
-                // if it is a file, rename properties file too
-                if (newFile.isFile()) {
-                    if (propFile.exists()) {
-                        File newPropFile = new File(parent, newName + SHADOW_EXT);
-                        if (!propFile.renameTo(newPropFile)) {
-                            LOG.error("Could not rename properties file: {}", propFile.getName());
-                        }
-                    }
-                }
             }
         }
 
@@ -1191,7 +1166,7 @@ public class FileShareRepository {
         List<File> children = new ArrayList<File>();
         for (File child : folder.listFiles()) {
             // skip hidden and shadow files
-            if (child.isHidden() || child.getName().equals(SHADOW_FOLDER) || child.getPath().endsWith(SHADOW_EXT)) {
+            if (child.isHidden()) {
                 continue;
             }
 
@@ -1370,7 +1345,7 @@ public class FileShareRepository {
         // iterate through children
         for (File child : folder.listFiles()) {
             // skip hidden and shadow files
-            if (child.isHidden() || child.getName().equals(SHADOW_FOLDER) || child.getPath().endsWith(SHADOW_EXT)) {
+            if (child.isHidden()) {
                 continue;
             }
 
@@ -1694,81 +1669,7 @@ public class FileShareRepository {
      */
     private void readCustomProperties(File file, PropertiesImpl properties, Set<String> filter,
             ObjectInfoImpl objectInfo) {
-        File propFile = getPropertiesFile(file);
-
-        // if it doesn't exists, ignore it
-        if (!propFile.exists()) {
-            return;
-        }
-
-        // parse it
-        ObjectData obj = null;
-        InputStream stream = null;
-        try {
-            stream = new BufferedInputStream(new FileInputStream(propFile), 64 * 1024);
-            XMLStreamReader parser = XMLUtils.createParser(stream);
-            XMLUtils.findNextStartElemenet(parser);
-            obj = XMLConverter.convertObject(parser);
-            parser.close();
-        } catch (Exception e) {
-            LOG.warn("Unvalid CMIS properties: {}", propFile.getAbsolutePath(), e);
-        } finally {
-            IOUtils.closeQuietly(stream);
-        }
-
-        if (obj == null || obj.getProperties() == null) {
-            return;
-        }
-
-        // add it to properties
-        for (PropertyData<?> prop : obj.getProperties().getPropertyList()) {
-            // overwrite object info
-            if (prop instanceof PropertyString) {
-                String firstValueStr = ((PropertyString) prop).getFirstValue();
-                if (PropertyIds.NAME.equals(prop.getId())) {
-                    objectInfo.setName(firstValueStr);
-                } else if (PropertyIds.OBJECT_TYPE_ID.equals(prop.getId())) {
-                    objectInfo.setTypeId(firstValueStr);
-                } else if (PropertyIds.CREATED_BY.equals(prop.getId())) {
-                    objectInfo.setCreatedBy(firstValueStr);
-                } else if (PropertyIds.CONTENT_STREAM_MIME_TYPE.equals(prop.getId())) {
-                    objectInfo.setContentType(firstValueStr);
-                } else if (PropertyIds.CONTENT_STREAM_FILE_NAME.equals(prop.getId())) {
-                    objectInfo.setFileName(firstValueStr);
-                }
-            }
-
-            if (prop instanceof PropertyDateTime) {
-                GregorianCalendar firstValueCal = ((PropertyDateTime) prop).getFirstValue();
-                if (PropertyIds.CREATION_DATE.equals(prop.getId())) {
-                    objectInfo.setCreationDate(firstValueCal);
-                } else if (PropertyIds.LAST_MODIFICATION_DATE.equals(prop.getId())) {
-                    objectInfo.setLastModificationDate(firstValueCal);
-                }
-            }
-
-            // check filter
-            if (filter != null) {
-                if (!filter.contains(prop.getQueryName())) {
-                    continue;
-                } else {
-                    filter.remove(prop.getQueryName());
-                }
-            }
-
-            // don't overwrite id
-            if (PropertyIds.OBJECT_ID.equals(prop.getId())) {
-                continue;
-            }
-
-            // don't overwrite base type
-            if (PropertyIds.BASE_TYPE_ID.equals(prop.getId())) {
-                continue;
-            }
-
-            // add it
-            properties.replaceProperty(prop);
-        }
+        return;
     }
 
     /**
@@ -1834,31 +1735,6 @@ public class FileShareRepository {
      * Writes the properties for a document or folder.
      */
     private void writePropertiesFile(File file, Properties properties) {
-        File propFile = getPropertiesFile(file);
-
-        // if no properties set delete the properties file
-        if (properties == null || properties.getProperties() == null || properties.getProperties().size() == 0) {
-            propFile.delete();
-            return;
-        }
-
-        // create object
-        ObjectDataImpl object = new ObjectDataImpl();
-        object.setProperties(properties);
-
-        OutputStream stream = null;
-        try {
-            stream = new BufferedOutputStream(new FileOutputStream(propFile));
-            XMLStreamWriter writer = XMLUtils.createWriter(stream);
-            XMLUtils.startXmlDocument(writer);
-            XMLConverter.writeObject(writer, CmisVersion.CMIS_1_1, true, "object", XMLConstants.NAMESPACE_CMIS, object);
-            XMLUtils.endXmlDocument(writer);
-            writer.close();
-        } catch (Exception e) {
-            throw new CmisStorageException("Couldn't store properties!", e);
-        } finally {
-            IOUtils.closeQuietly(stream);
-        }
     }
 
     private boolean isEmptyProperty(PropertyData<?> prop) {
@@ -2125,10 +2001,6 @@ public class FileShareRepository {
             return true;
         }
 
-        if (fileNames.length == 1 && fileNames[0].equals(SHADOW_FOLDER)) {
-            return true;
-        }
-
         return false;
     }
 
@@ -2151,17 +2023,6 @@ public class FileShareRepository {
         }
 
         return readOnly.booleanValue();
-    }
-
-    /**
-     * Returns the properties file of the given file.
-     */
-    private File getPropertiesFile(File file) {
-        if (file.isDirectory()) {
-            return new File(file, SHADOW_FOLDER);
-        }
-
-        return new File(file.getAbsolutePath() + SHADOW_EXT);
     }
 
     /**
